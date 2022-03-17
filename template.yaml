@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  dragons-api
+
+  Sample SAM Template for dragons-api
+
+Globals:
+  Function:
+    Timeout: 3
+    Environment:
+      Variables:
+        DYNAMO_TABLE: !Ref DynamoTable
+        REGION_NAME: us-east-1
+        QUEUE_URL: !Ref SqsDragonQueue
+        S3_URL: !Ref DragonDailyStatisticsBucket
+
+Resources:
+  DynamoTable:
+      Type: AWS::Serverless::SimpleTable
+      Properties:
+        TableName: dragons-table
+        PrimaryKey:
+          Name: name
+          Type: String
+      ProvisionedThroughput:
+          ReadCapacityUnit: 5
+          WriteCapacityUnits: 5
+      Tags:
+          AppType: Serverless
+
+  PydanticLayer:
+      Type: AWS::Serverless::LayerVersion
+      Properties:
+          LayerName: dragons-app-dependencies
+          Description: Dependencies for dragons-api app
+          ContentUri: dependencies/
+          CompatibleRuntimes:
+            - python3.9
+      Metadata:
+        BuildMethod: python3.9
+
+  DecimalReformatLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: dragons-app-decimal-reformat
+      Description: Decimal reformat method for dragons-api app
+      ContentUri: decimal_layer/
+      CompatibleRuntimes:
+        - python3.9
+
+  ModelsPydanticLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: dragons-app-pydantic-models
+      Description: Pydantic models for dragons-api app
+      ContentUri: models_layer/
+      CompatibleRuntimes:
+        - python3.9
+
+  GetDragonsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dragons/
+      Handler: get_dragons.lambda_handler
+      Layers:
+        - !Ref DecimalReformatLayer
+      Runtime: python3.9
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoTable
+      Events:
+        Dragons:
+          Type: Api
+          Properties:
+            Path: /dragons/
+            Method: GET
+
+  GetDragonFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dragons/
+      Handler: get_dragon.lambda_handler
+      Layers:
+        - !Ref DecimalReformatLayer
+      Runtime: python3.9
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoTable
+      Events:
+        Dragons:
+          Type: Api
+          Properties:
+            Path: /dragons/{name}
+            Method: GET
+
+  SqsDragonQueue:
+    Type: AWS::SQS::Queue
+
+  PostDragonsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dragons/
+      Handler: post_dragons.lambda_handler
+      Layers:
+        - !Ref PydanticLayer
+        - !Ref ModelsPydanticLayer
+      Runtime: python3.9
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt SqsDragonQueue.QueueName
+        - SQSPollerPolicy:
+            QueueName: !GetAtt SqsDragonQueue.QueueName
+      Events:
+        Dragons:
+          Type: Api
+          Properties:
+            Path: /dragons/
+            Method: POST
+
+  DeleteDragonFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dragons/
+      Handler: delete_dragon.lambda_handler
+      Runtime: python3.9
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoTable
+      Events:
+        Dragons:
+          Type: Api
+          Properties:
+            Path: /dragons/{name}
+            Method: DELETE
+
+  PutDragonFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dragons/
+      Handler: put_dragon.lambda_handler
+      Layers:
+        - !Ref DecimalReformatLayer
+        - !Ref PydanticLayer
+        - !Ref ModelsPydanticLayer
+      Runtime: python3.9
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoTable
+      Events:
+        Dragons:
+          Type: Api
+          Properties:
+            Path: /dragons/{name}
+            Method: PUT
+
+  NotifyAboutDragonFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dragons/
+      Handler: notify_about_dragon.lambda_handler
+      Runtime: python3.9
+      Environment:
+        Variables:
+          TELEGRAM_TOKEN: 5203049611:AAHX-VeJ7KOLZYDYajRXAZUMGm9qMApBk94
+          USER_ID: 511472569
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action:
+              - 'ses:SendEmail'
+              - 'ses:SendRawEmail'
+              - 'ses:SendTemplatedEmail'
+            Resource: '*'
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt SqsDragonQueue.QueueName
+        - SQSPollerPolicy:
+            QueueName: !GetAtt SqsDragonQueue.QueueName
+      Events:
+        Dragons:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SqsDragonQueue.Arn
+
+  DragonDailyStatisticsBucket:
+    Type: AWS::S3::Bucket
+
+  DragonDailyStatisticsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dragons/
+      Handler: daily_statistics.lambda_handler
+      Layers:
+        - !Ref PydanticLayer
+      Runtime: python3.9
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoTable
+        - S3WritePolicy:
+            BucketName: !Ref DragonDailyStatisticsBucket
+      Events:
+        Dragon:
+          Type: Schedule
+          Properties:
+            Schedule: cron(50 23 * * ? *)
+            Enabled: True
+
+Outputs:
+  DragonsApi:
+    Description: "API Gateway endpoint URL for Prod stage for Dragons function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/dragons/"
+  GetDragonsFunction:
+    Description: "Get Dragons Function ARN"
+    Value: !GetAtt GetDragonsFunction.Arn
+  GetDragonsFunctionIamRole:
+    Description: "Implicit IAM Role created for Get Dragons function"
+    Value: !GetAtt GetDragonsFunctionRole.Arn
+  GetDragonFunction:
+    Description: "Get Dragon Function ARN"
+    Value: !GetAtt GetDragonFunction.Arn
+  GetDragonFunctionIamRole:
+    Description: "Implicit IAM Role created for Get Dragon function"
+    Value: !GetAtt GetDragonFunctionRole.Arn
+  PostDragonsFunction:
+    Description: "Post Dragons Function ARN"
+    Value: !GetAtt PostDragonsFunction.Arn
+  PostDragonsFunctionIamRole:
+    Description: "Implicit IAM Role created for Post Dragons function"
+    Value: !GetAtt PostDragonsFunctionRole.Arn
+  DeleteDragonFunction:
+    Description: "Delete Dragon Function ARN"
+    Value: !GetAtt DeleteDragonFunction.Arn
+  DeleteDragonFunctionIamRole:
+    Description: "Implicit IAM Role created for Delete Dragon function"
+    Value: !GetAtt DeleteDragonFunctionRole.Arn
+  PutDragonFunction:
+    Description: "Put Dragon Function ARN"
+    Value: !GetAtt PutDragonFunction.Arn
+  PutDragonFunctionIamRole:
+    Description: "Implicit IAM Role created for Put Dragon function"
+    Value: !GetAtt PutDragonFunctionRole.Arn
